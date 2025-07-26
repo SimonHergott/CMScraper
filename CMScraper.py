@@ -90,10 +90,6 @@ def analyse_frames(frame):
     filtered_conf = conf[high_conf_indices]
     filtered_cls = cls[high_conf_indices]
 
-    for box, confidence, class_id in zip(filtered_boxes, filtered_conf, filtered_cls):
-        x1, y1, x2, y2 = box
-        #print(f"Box: ({x1}, {y1}, {x2}, {y2}), Confidence: {confidence:.2f}, Class: {class_id_to_name(int(class_id))}")
-
     zip_boxes = zip(filtered_boxes, filtered_conf, filtered_cls)
     # Construction d'un objet composition_ecran
     for box in zip_boxes:
@@ -105,7 +101,7 @@ def analyse_frames(frame):
 
 def debug_exporter_composition_as_frame(composition, taillex, tailley):
     # Pour du debug, prend tout ce qui est visible sur la composition et renvoie une frame illustrative (taille en param)
-    frame = np.zeros((taillex, tailley, 3), np.uint8)
+    frame = np.zeros((tailley, taillex, 3), np.uint8)
     for composant in composition.get_all_composants():
         x, y, w, h = composant.position
         x1, y1, w1, h1 = int(x-w/2), int(y-h/2), int(x+w/2), int(y+h/2)
@@ -113,8 +109,33 @@ def debug_exporter_composition_as_frame(composition, taillex, tailley):
         text_size = cv2.getTextSize(composant.__class__.__name__, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
         text_x = x1 + 5
         text_y = y1 + text_size[1] + 5
-        cv2.putText(frame, f"{composant.__class__.__name__}, id: {composant.id}", (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"{composant.__class__.__name__}, id: {composant.id}, x:{x}, y:{y}", (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
     return frame
+
+def debug_overlay_frame_composition(composition, frame, taillex, tailley, alpha_dim=0.4, alpha_overlay=1.0):
+    output_frame = frame.copy() 
+    output_frame = cv2.convertScaleAbs(output_frame, alpha=alpha_dim)
+    overlay_annotations = np.zeros_like(output_frame, dtype=np.uint8)
+
+    for composant in composition.get_all_composants():
+        x, y, w, h = composant.position
+        x1 = int(x - w / 2)
+        y1 = int(y - h / 2)
+        x2 = int(x + w / 2)
+        y2 = int(y + h / 2)
+        cv2.rectangle(overlay_annotations, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        text = f"{composant.__class__.__name__}, id: {composant.id}, x:{x}, y:{y}"
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+        text_x = x1 + 5
+        text_y = y1 - 10 if y1 - 10 > text_size[1] + 5 else y1 + text_size[1] + 5
+        if text_y < text_size[1]:
+            text_y = y2 + text_size[1] + 5
+        cv2.putText(overlay_annotations, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+    final_frame = cv2.addWeighted(output_frame, 1.0, overlay_annotations, alpha_overlay, 0)
+    if final_frame.shape[1] != taillex or final_frame.shape[0] != tailley:
+        final_frame = cv2.resize(final_frame, (taillex, tailley))
+    return final_frame
+
 
 def afficher_frame(frame):
     # Affiche la frame
@@ -219,6 +240,8 @@ def OCR(composant_graph, frame, confiance = 10):
         scale_factor = 2 
         upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
 
+        enregistrer_frame(upscaled_frame, "debug/cropped_auteur.png")
+
         text = pytesseract.image_to_string(upscaled_frame)
         # Lire seulement la première ligne
         first_line = text.split('\n')[0]
@@ -254,6 +277,8 @@ def OCR(composant_graph, frame, confiance = 10):
         scale_factor = 2 
         upscaled_frame_for_ocr = cv2.resize(cropped_frame_to_process, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
 
+        enregistrer_frame(upscaled_frame_for_ocr, "debug/cropped_option.png")
+
         data = pytesseract.image_to_data(upscaled_frame_for_ocr, output_type=pytesseract.Output.DICT)
         text = " ".join(data['text'][i] for i in range(len(data['text'])) if int(data['conf'][i]) > confiance)
 
@@ -274,7 +299,7 @@ def OCR(composant_graph, frame, confiance = 10):
         scale_factor = 2
         upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC) 
 
-        #enregistrer_frame(upscaled_frame, "debug/taux.png")
+        enregistrer_frame(upscaled_frame, "debug/taux.png")
 
         raw_text = pytesseract.image_to_string(upscaled_frame, config='--psm 7')
         match = re.search(r'(\d{1,2})%', raw_text) # Regex qui matche le taux
@@ -289,13 +314,15 @@ def OCR(composant_graph, frame, confiance = 10):
         x1, y1, x2, y2 = int(x - w / 2), int(y - h / 2), int(x + w / 2), int(y + h / 2)
 
         # On mange qqs px sur la gauche pour éviter de capturer l'image de profil
-        x1 += 30 # TODO: paramétrer et mettre dans config
+        x1 +=50 # TODO: paramétrer et mettre dans config
         
         cropped_frame = frame[y1:y2, x1:x2]
 
         # Quantization + upscaling
         scale_factor = 2 
         upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+        
+        enregistrer_frame(upscaled_frame, "debug/cropped_personne.png")
 
         text = pytesseract.image_to_string(upscaled_frame)
         # Lire seulement la première ligne
@@ -383,7 +410,7 @@ def scroll_down(scroll_type, goto_x=None, goto_y=None):
                 pyautogui.scroll(6)
             else:
                 raise ValueError("Scroll inconnu")
-            time.sleep(0.9)
+            time.sleep(1.5)
         elif IS_WAYLAND:
             if scroll_type == "small":
                 _wayland_mouse_controller.scroll(-100) # Valeurs douteuses
@@ -402,7 +429,7 @@ def simulate_click(x_screen, y_screen, button='left', clicks=1, interval=0.1):
     print(f"Cliquage à ({x_screen}, {y_screen}) avec le bouton {button}, {clicks} fois.")
     if IS_MACOS or IS_XORG:
         pyautogui.click(x=x_screen, y=y_screen, button=button, clicks=clicks, interval=interval)
-        time.sleep(10) # debug
+        #time.sleep(10) # debug
     elif IS_WAYLAND:
         move_mouse_to(x_screen, y_screen)
         for _ in range(clicks):
@@ -418,7 +445,7 @@ def simulate_click(x_screen, y_screen, button='left', clicks=1, interval=0.1):
             if clicks > 1:
                 time.sleep(interval)
 
-def move_mouse_to(x_screen, y_screen, duration=0.5):
+def move_mouse_to(x_screen, y_screen, duration=0):
     """
     Déplace la souris à la position (x_screen, y_screen).
     Pas de duration pour wayland
@@ -458,10 +485,17 @@ def main_loop(screen_width, screen_height):
             os.makedirs("debug/analyses")
         if not os.path.exists("debug/raw"):
             os.makedirs("debug/raw")
-        enregistrer_frame(debug_exporter_composition_as_frame(composition, screen_height, screen_width), f"debug/analyses/test{frame_index}.png")
-        enregistrer_frame(frame, f"debug/raw/test{frame_index}.png")
+        enregistrer_frame(debug_exporter_composition_as_frame(composition, screen_width, screen_height), f"debug/analyses/compo{frame_index}.png")
+        enregistrer_frame(debug_overlay_frame_composition(composition, frame, screen_width, screen_height), f"debug/analyses/overlay{frame_index}.png")
+        enregistrer_frame(frame, f"debug/raw/frame{frame_index}.png")
         
         if composition.reponse_dev_mode():
+
+            reponses_dev_graph = composition.get_racines_reponse_dev()[0]
+            if reponses_dev_graph is None:
+                print("UB: reponse dev graph non détectée mais mode reponse_dev actif")
+                break
+
             end_of_resp_list = False
             while not end_of_resp_list:
                 current_repondents_on_screen = [] # Pour vérifier qu'on est pas au bout
@@ -497,6 +531,11 @@ def main_loop(screen_width, screen_height):
                     # Si il y en a des nouveaux, on update la liste et on scrolle pour voir si on est au bout
                     temp_last_names_reponse_dev = current_repondents_on_screen.copy()
                     print(f"Scrollage en mode reponse_dev. Nouveaux: {len(current_repondents_on_screen)}")
+                    # On place la souris au milieu de la reponse dev avant de scroller
+                    x, y, w, h = reponses_dev_graph.position
+                    print(f"Position de la reponse_dev: {x}, {y}, {w}, {h}")
+                    move_mouse_to(x, y)
+                    # On scrolle vers le bas
                     scroll_down("small")
                     frame = read_screen()
                     composition = analyse_frames(frame)
@@ -513,6 +552,7 @@ def main_loop(screen_width, screen_height):
             if bouton_fermer:
                 bouton_fermer = bouton_fermer[0]
                 x, y, w, h = bouton_fermer.position
+                print(f"Position du bouton fermer: {x}, {y}, {w}, {h}")
                 simulate_click((x + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (y + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
                 print("Clic sur 'bouton_fermer_reponse'.")
                 time.sleep(0.2)
@@ -584,7 +624,8 @@ def main_loop(screen_width, screen_height):
 
                         if len(voir_rep_op) == 1:
                             vro_component = voir_rep_op[0]
-                            x, y, _, _ = vro_component.position
+                            x, y, w, h = vro_component.position
+                            print(f"Position du bouton 'voir_reponses_option': ({x}, {y}), taille: ({w}, {h})")
                             print(f"Clic sur 'voir_reponses_option' pour '{descr_option}' à ({x}, {y}).")
                             simulate_click((x + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (y + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
                             
@@ -638,12 +679,12 @@ if __name__ == "__main__":
 
     # Offsets de debug de la fenetre navigateur capturée
     WINDOW_TOP_LEFT_X = 0 # pos x=0
-    WINDOW_TOP_LEFT_Y = 0 # 25 # pos y = 0
+    WINDOW_TOP_LEFT_Y = 25 # pos y = 0
 
     # Correction à la main TODO: capter d'ou ca vient
     OFFSET_DEBUG_Y = 0 # -100 
-    OFFSET_FACTOR_X = 0.9 # Vraie position selon X = position détectée * OFFSET_FACTOR_X
-    OFFSET_FACTOR_Y = 0.94 # Idem
+    OFFSET_FACTOR_X = 1 #0.93 # Vraie position selon X = position détectée * OFFSET_FACTOR_X
+    OFFSET_FACTOR_Y = 1 #0.94 # Idem
 
     # Compatibilité Wayland + Xorg
     IS_MACOS = sys.platform == 'darwin'
@@ -691,6 +732,8 @@ if __name__ == "__main__":
 
     screen_width = int(os.getenv("RESOLUTION_WIDTH"))
     screen_height = int(os.getenv("RESOLUTION_HEIGHT"))
+
+    print(f"Résolution de l'écran: {screen_width}x{screen_height}")
 
     main_loop(screen_width, screen_height)
 

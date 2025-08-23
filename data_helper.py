@@ -16,9 +16,9 @@ def correlation_txt(texteA, texteB, seuil = 0.15):
         if max_length == 0:  # Eviter la division par zéro
             return True
         
-        #print(f"correlation_txt(): correlation de {texteA} avec {texteB}: Same = {distance} < {seuil * max_length}")
+        print(f"correlation_txt(): correlation de {texteA} avec {texteB}: Same = {distance} < {seuil * max_length}")
         
-        return distance < seuil * max_length
+        return (distance < seuil * max_length) # Bool qui dit si les textes sont les memes
 
 def write_to_json_file(data, filename):
     try:
@@ -125,6 +125,12 @@ class SurveyedGuy:
 
     def get_all_seen_names(self):
         return self.seen_names.get_all_versions()
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "seen_names": self.seen_names.to_dict()
+        }
 
 class PeopleDatabase:
 # Database liant les gens à un ID. On garde les noms comme Stringversions.
@@ -221,5 +227,13 @@ class PeopleDatabase:
             if person.id == id:
                 return person.get_name()
         return None
+
+    def export_to_json(self, filename):
+        # Exporte la base de données en JSON
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(self.to_dict(), f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Erreur lors de l'exportation en JSON: {e}")
         
     

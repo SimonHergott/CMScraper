@@ -1,6 +1,6 @@
 from composition_ecran import id_cooker
 import data_helper
-from data_helper import StringVersion
+from data_helper import StringVersion, correlation_txt
 
 # Objet sondage pour l'export vers un JSON: est associé à un objet composant, mais n'est pas défini par lui.
 # On définit ici des objets modèle (model) pour rendre la structure de données un peu plus robuste.
@@ -18,18 +18,14 @@ class sondage_m:
         self.choix_unique = None
         self.options = [] # Tableau d'options
 
-    def ajouter_option(self, option) -> bool:
-        # Ajoute l'option en vérifiant si on l'a déjà. Si oui, pas la peine de l'ajouter.
-        # Si l'option avait té déjà ajoutée, on l'explicite en sortie
-        match_found = False
+    def ajouter_option(self, option):
+        # Retourne toujours l'instance stockée (existante ou nouvellement ajoutée)
         for i, option_ex in enumerate(self.options):
-            if data_helper.correlation_txt(option_ex.get_description(), option.get_description(), 0.2): # Si une option similaire est trouvée
-                self.options[i].ajouter_description(option.get_description()) # Alors on màj
-                match_found = True
-                break
-        if not match_found:
-            self.options.append(option)
-        return match_found
+            if correlation_txt(option_ex.get_description(), option.get_description(), 0.5):
+                self.options[i].ajouter_description(option.get_description())
+                return self.options[i]
+        self.options.append(option)
+        return option
 
     def ajouter_description(self, description):
         self.description.add_version(description)
@@ -69,7 +65,8 @@ class option_m:
         self.description = StringVersion()
         self.taux = None
         self.sondage_id = None
-        self.respondents = [] #Liste d'ID lié à la DB des personnes
+        self.respondents = [] # Liste d'ID lié à la DB des personnes
+        self.scanned = False  # <- ajouté: indique si la liste des répondants a été parcourue
 
     def get_description(self):
         return self.description.get_most_plausible()
@@ -81,18 +78,28 @@ class option_m:
         if respondent not in self.respondents:
             self.respondents.append(respondent)
 
+    def has_been_scanned(self) -> bool:
+        return self.scanned
+
+    def mark_scanned(self):
+        self.scanned = True
+
     def to_dict(self):
         return {
             "id": self.id,
             "description": self.get_description(),
             "taux": self.taux,
-            "sondage_id": self.sondage_id
+            "sondage_id": self.sondage_id,
+            "respondents": self.respondents,
+            "scanned": self.scanned
         }
     
     def to_dict_smpl(self):
         return {
             "description": self.get_description(),
-            "taux": self.taux
+            "taux": self.taux,
+            "respondents": self.respondents,
+            "scanned": self.scanned
         }
-    
+
 

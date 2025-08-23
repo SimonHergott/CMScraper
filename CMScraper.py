@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import dotenv
 from composition_ecran import composition_ecran, composant, auteur_sondage, bouton_fermer_reponse, bouton_voir_tout, option_reponse, personne_sondee, reponse_dev, sondage, voir_reponses_option
-from database import database_helper_names
 from ultralytics import YOLO
 import os
 import pytesseract
@@ -24,7 +23,7 @@ def verbose(level):
             if current_verbosity_level >= level:
                 return func(*args, **kwargs)
             else:
-                print(f"Fonction '{func.__name__}' ignorée verbose faible")
+                #print(f"Fonction '{func.__name__}' ignorée verbose faible")
                 return None
         return wrapper
     return decorator
@@ -79,13 +78,25 @@ def analyse_frames(frame):
     compo = composition_ecran(frame)
     bboxes = detecter_bboxes(frame)
 
-    #tri des bboxes: on vire celles à <0.7 de confiance
+    # Tri des bboxes: on applique des indices de confiance différents selon le type de composant
     conf = bboxes.conf
     cls = bboxes.cls
     xywh = bboxes.xywh
 
-    # Filter by confidence
-    high_conf_indices = conf > float(os.getenv("INDICE_CONF"))
+    # Indices de confiance
+    indice_conf_general = float(os.getenv("INDICE_CONF"))
+    indice_conf_auteur = float(os.getenv("INDICE_CONF_AUTEUR")) # Séparé car le modèle est nul sur les auteurs
+
+    # Filtrage par confiance
+    high_conf_indices = []
+    for i, class_id in enumerate(cls):
+        if class_id == 0:  # auteur_sondage
+            if conf[i] > indice_conf_auteur:
+                high_conf_indices.append(i)
+        else:
+            if conf[i] > indice_conf_general:
+                high_conf_indices.append(i)
+
     filtered_boxes = xywh[high_conf_indices]
     filtered_conf = conf[high_conf_indices]
     filtered_cls = cls[high_conf_indices]
@@ -95,7 +106,7 @@ def analyse_frames(frame):
     for box in zip_boxes:
         compo.ajouter_composant(make_component(box))
     
-    compo.ordonner(threshold_incl=0.8, verbose=False) # On range les composants les uns dans les autres
+    compo.ordonner(threshold_incl=0.8, verbose=False)  # On range les composants les uns dans les autres
 
     return compo
 
@@ -190,7 +201,7 @@ def make_component(box_detail):
 def detecter_bboxes(frame):
     model_path = os.getenv("MODEL")
     model = YOLO(model_path)
-    results = model(frame)
+    results = model(frame, verbose=False)
     return results[0].boxes
 
 def OCR(composant_graph, frame, confiance = 10):
@@ -281,6 +292,9 @@ def OCR(composant_graph, frame, confiance = 10):
 
         data = pytesseract.image_to_data(upscaled_frame_for_ocr, output_type=pytesseract.Output.DICT)
         text = " ".join(data['text'][i] for i in range(len(data['text'])) if int(data['conf'][i]) > confiance)
+
+        text = re.sub(r'^\)\s*', '', text)# enleve les parentheses en début de texte
+        text = re.sub(r'\s*\d+%\s*>?$', '', text)  # enleve les % à la fin ( "xx% >" )
 
         return text
     
@@ -380,9 +394,11 @@ def verifier_vision_sondage(composant_graph, frame, padding_minimal = 50):
         return True
     return False
 
-def nettoyer_sondages(pack_de_sondages):
+def nettoyer_sondages(pack_de_sondages_orig):
     """ Nettoie une liste de sondage_m en enlevant:
-        - Les option svues une seule fois"""
+        - Les option svues une seule fois
+    Renvoie une copie!"""
+    pack_de_sondages = pack_de_sondages_orig.copy()
     for sondage in pack_de_sondages:
         options_to_remove = []
         for option in sondage.options:
@@ -405,9 +421,13 @@ def scroll_down(scroll_type, goto_x=None, goto_y=None):
     try:
         if IS_MACOS or IS_XORG:
             if scroll_type == "small":
+                #print("Small scroll")
                 pyautogui.scroll(3)
             elif scroll_type == "big":
-                pyautogui.scroll(6)
+                #print("Big scroll")
+                pyautogui.scroll(3)
+                pyautogui.scroll(3)
+                pyautogui.scroll(3)
             else:
                 raise ValueError("Scroll inconnu")
             time.sleep(1.5)
@@ -450,37 +470,118 @@ def move_mouse_to(x_screen, y_screen, duration=0):
     Déplace la souris à la position (x_screen, y_screen).
     Pas de duration pour wayland
     """
-    print(f"Déplacement de la souris à ({x_screen}, {y_screen})")
+    #print(f"Déplacement de la souris à ({x_screen}, {y_screen})")
     if IS_MACOS or IS_XORG:
         pyautogui.moveTo(x_screen, y_screen, duration=duration)
     elif IS_WAYLAND:
         _wayland_mouse_controller.move(x_screen, y_screen)
 
+def exporter_sondages(sondages_global, path="debug/sondages.json"):
+    # Export des sondages en JSON
+    sondages = nettoyer_sondages(sondages_global)
+    data = {"sondages": [sondage.to_dict_smpl() for sondage in sondages]}
+    write_to_json_file(data, path)
+        
+def lire_repondants_pour_option(option_component, option_model):
+    """
+    Ouvre la vue 'réponse développée' pour l'option donnée, lit tous les répondants,
+    les associe à option_model, puis ferme la vue. Marque l'option comme scannée bitwise
+    """
 
-
+    if option_model.has_been_scanned():
+        print("[OPTION] Skip : deja scannée")
+        return
     
+    # Clic bouton voir rep option
+    voir_rep_op = [vro for vro in getattr(option_component, "fils", []) if vro.is_voir_reponses_option()]
+    if not voir_rep_op:
+        print("[OPTION] Skip: Pas de bouton 'voir_reponses_option'")
+        return
+
+    vro_component = voir_rep_op[0]
+    x, y, w, h = vro_component.position
+    print(f"[OPTION] Clic 'voir_reponses_option' à ({x}, {y})")
+    simulate_click((x + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (y + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
+    time.sleep(0.5)
+
+    # Lcture list
+    prev_ids = set()
+    while True:
+        frame = read_screen()
+        if frame is None:
+            break
+        composition = analyse_frames(frame)
+
+        if not composition.reponse_dev_mode():
+            # Pb de vue qui met du temps à s'ouvrir
+            time.sleep(0.3)
+            frame = read_screen()
+            if frame is None:
+                break
+            composition = analyse_frames(frame)
+            if not composition.reponse_dev_mode():
+                print("[OPTION] Mode reponse_dev non détecté après clic, abandon lecture répondants.")
+                break
+
+        reponses_dev_graphs = composition.get_racines_reponse_dev()
+        if not reponses_dev_graphs:
+            print("[OPTION] Aucune racine reponse_dev détectée.")
+            break
+
+        reponses_dev_graph = reponses_dev_graphs[0]
+
+        current_ids = []
+        for compo in reponses_dev_graph.fils:
+            if compo.is_personne_sondee():
+                personne = OCR(compo, frame)
+                if not personne:
+                    continue
+                db = PeopleDatabase.get_instance()
+                pid = db.get_id_from_name(personne)
+                if pid is None:
+                    pid = db.add_person_from_name(personne)
+                option_model.ajouter_respondent(pid)
+                current_ids.append(pid)
+
+        if set(current_ids) == prev_ids:
+            print("[OPTION] Fin de la liste des répondants pour cette option.")
+            break
+
+        prev_ids = set(current_ids)
+        # Scroll dans le panneau rep dev
+        rx, ry, rw, rh = reponses_dev_graph.position
+        move_mouse_to(rx, ry)
+        scroll_down("big")
+        time.sleep(0.3)
+
+    # Ferme + marque scannée
+    frame = read_screen()
+    if frame is not None:
+        composition = analyse_frames(frame)
+        bouton_fermer = [c for c in composition.get_all_composants() if c.is_bouton_fermer_reponse()]
+        if bouton_fermer:
+            bx, by, bw, bh = bouton_fermer[0].position
+            simulate_click((bx + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (by + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
+            time.sleep(0.2)
+
+    option_model.mark_scanned()
+
+
+
 def main_loop(screen_width, screen_height):
-    
     frame_index = 0
     sondages_global = []  # Ensemble des sondages qui ont été vus
 
-    # Variablede mémorisation réponse_dev
-    last_names_reponse_dev = [] # Stocke les derniers ID de répondants. Utile pour vérifier la fin de scroll en reponse dev
-    temp_last_names_reponse_dev = [] # Stocke les derniers noms de répondants. Utile pour vérifier la fin de scroll en reponse dev
-    last_option_clicked = None #Sert pour l'association aux reponse_dev
-
-    while True and frame_index < 100:  # Limite de frames pour éviter une boucle infinie
-        # Analyse de l'écran
+    while True and frame_index < 100:
         frame = read_screen()
         frame_index += 1
+        if frame is None:
+            break
         composition = analyse_frames(frame)
 
         print(f"\nPasse {frame_index} -- Frame lue, analyse en cours...\n")
 
-        if frame is None:
-            break  # passage à l'enregistrement des données
-
-        # DEBUG -- enregistrement de la frame et de la composition
+        # DEBUG
         if not os.path.exists("debug/analyses"):
             os.makedirs("debug/analyses")
         if not os.path.exists("debug/raw"):
@@ -488,187 +589,120 @@ def main_loop(screen_width, screen_height):
         enregistrer_frame(debug_exporter_composition_as_frame(composition, screen_width, screen_height), f"debug/analyses/compo{frame_index}.png")
         enregistrer_frame(debug_overlay_frame_composition(composition, frame, screen_width, screen_height), f"debug/analyses/overlay{frame_index}.png")
         enregistrer_frame(frame, f"debug/raw/frame{frame_index}.png")
-        
+
+        # Si on se retrouve en mode reponse_dev hors séquence, on ferme proprement et on continue
         if composition.reponse_dev_mode():
-
-            reponses_dev_graph = composition.get_racines_reponse_dev()[0]
-            if reponses_dev_graph is None:
-                print("UB: reponse dev graph non détectée mais mode reponse_dev actif")
-                break
-
-            end_of_resp_list = False
-            while not end_of_resp_list:
-                current_repondents_on_screen = [] # Pour vérifier qu'on est pas au bout
-
-                for compo in reponses_dev_graph.fils: # Lecture et ajout des gens
-                    if compo.is_personne_sondee():
-                        personne = OCR(compo, frame)
-                        if personne is None or personne == "":
-                            print("Personne sondée sans nom, ignorée")
-                            continue
-                        else:
-                            print(f"Personne sondée: {personne}")
-                            id_personne = PeopleDatabase.get_instance().get_id_from_name(personne)
-                            if id_personne is None:
-                                print(f"Personne sondée non existante. Ajout à la BDD")
-                                id_personne = PeopleDatabase.get_instance().add_person_from_name(personne)
-                            else:
-                                print(f"Personne sondée existante: {id_personne}")
-
-                            current_repondents_on_screen.append(id_personne)
-
-                            # Ajout de l'ID sur l'option qui correspond
-                            if last_option_clicked:
-                                last_option_clicked.ajouter_respondent(id_personne)
-                            else:
-                                print("Warning: last_option_clicked is None, cannot associate respondent.")
-
-                # Comparaison des répondants précédents et actuels pour vérifier le scroll
-                if set(current_repondents_on_screen) == set(temp_last_names_reponse_dev):
-                    print("Fin de la liste des répondants!")
-                    end_of_resp_list = True
-                else:
-                    # Si il y en a des nouveaux, on update la liste et on scrolle pour voir si on est au bout
-                    temp_last_names_reponse_dev = current_repondents_on_screen.copy()
-                    print(f"Scrollage en mode reponse_dev. Nouveaux: {len(current_repondents_on_screen)}")
-                    # On place la souris au milieu de la reponse dev avant de scroller
-                    x, y, w, h = reponses_dev_graph.position
-                    print(f"Position de la reponse_dev: {x}, {y}, {w}, {h}")
-                    move_mouse_to(x, y)
-                    # On scrolle vers le bas
-                    scroll_down("small")
-                    frame = read_screen()
-                    composition = analyse_frames(frame)
-                    reponses_dev_graph = composition.get_racines_reponse_dev()[0]
-
-                    if reponses_dev_graph is None:
-                        print("UB si la liste de reponses dev est étonnamment vide")
-                        end_of_resp_list = True
-
-            temp_last_names_reponse_dev = []
-
-            # Sortie de la boucle de lecture, fermeture de fenetre
-            bouton_fermer = [compo for compo in composition.get_all_composants() if compo.is_bouton_fermer_reponse()]
+            bouton_fermer = [c for c in composition.get_all_composants() if c.is_bouton_fermer_reponse()]
             if bouton_fermer:
-                bouton_fermer = bouton_fermer[0]
-                x, y, w, h = bouton_fermer.position
-                print(f"Position du bouton fermer: {x}, {y}, {w}, {h}")
-                simulate_click((x + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (y + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
-                print("Clic sur 'bouton_fermer_reponse'.")
+                bx, by, bw, bh = bouton_fermer[0].position
+                simulate_click((bx + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (by + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
                 time.sleep(0.2)
-                frame = read_screen()
-                composition = analyse_frames(frame)
-                last_option_clicked = None
+            continue
 
-
-        elif composition.sondage_mode(): # Evite d'etre en mode sondage et de rester "bloqué" entre 2 sondages non complets
-            # Le sondage est-il complet?
+        if composition.sondage_mode():
             sondages_graph = composition.get_racines_sondage()
-            sondage_complet = None 
+            sg_complet = None
             for sg in sondages_graph:
+                # Affichage complet
+                bouton_voir_tout = [c for c in sg.get_all_composants() if c.is_bouton_voir_tout()]
+                if bouton_voir_tout:
+                    bx, by, bw, bh = bouton_voir_tout[0].position
+                    simulate_click((bx + WINDOW_TOP_LEFT_X) * OFFSET_FACTOR_X, (by + WINDOW_TOP_LEFT_Y) * OFFSET_FACTOR_Y)
+                    time.sleep(0.2)
+                    break
+
+                # verif complétude
                 if verifier_vision_sondage(sg, frame):
-                    sondage_complet = sg.id
-                    print(f"Sondage complet trouvé: {sg.id}")
+                    sg_complet = sg
+                    print(f"[SONDAGE] Sondage complet trouvé: {sg.id}")
                     break
-                else:
-                    print(f"Trouvé: sondage incomplet à la passe {frame_index}")
-                    scroll_down("small")
-                    continue
 
-            if sondage_complet is not None:
+            if sg_complet is None:
+                print(f"[SONDAGE] Sondage incomplet, on scrolle un peu.")
+                scroll_down("small")
+                continue
 
-                clicked_on_voir_reponses = False # Pilote le scroll plus tard
+            # Lecture dscr + auteur
+            sm = sondage_m()
+            descr = OCR(sg_complet, frame)
+            if not descr:
+                print("[SONDAGE] Sondage sans description, ignoré.")
+                scroll_down("big")
+                continue
+            sm.ajouter_description(descr)
 
-                # On clique sur le bouton "voir tout"
-                bouton_voir_tout = [fils for fils in sg.fils if fils.is_bouton_voir_tout()]
-                if bouton_voir_tout is not None and len(bouton_voir_tout)>=1:
-                    if isinstance(bouton_voir_tout, list):
-                        bouton_voir_tout = bouton_voir_tout[0]
-                    x,y,w,h = bouton_voir_tout.position
-                    print(bouton_voir_tout.position)
-                    simulate_click((x + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (y + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
+            auteurs = [f for f in sg_complet.fils if f.is_auteur_sondage()]
+            if not auteurs:
+                print("[SONDAGE] Sondage sans auteur, ignoré.")
+                scroll_down("big")
+                continue
+            sm.ajouter_auteur(OCR(auteurs[0], frame))
 
-                # On lit l'auteur, son texte total et ses options de réponse
-                sm = sondage_m()
-                descr = OCR(sg, frame)
-                if descr is None or descr == "":
-                    print("Sondage sans description, ignoré")
-                    scroll_down("small")
-                    break
-                else:
-                    sm.ajouter_description(descr)
+            # Construction des options
+            option_pairs = [] # paire composant - model, pour pouvoir lire ensuite la liste
+            options_components = [f for f in sg_complet.fils if f.is_option_reponse()]
+            for opt_comp in options_components:
+                om = option_m()
+                descr_option = OCR(opt_comp, frame)
+                om.ajouter_description(descr_option)
 
-                auteur = [fils for fils in sg.fils if fils.is_auteur_sondage()]
-                if auteur:
-                    sm.ajouter_auteur(OCR(auteur[0], frame))
-                else:
-                    break # Pas d'auteur, on passe au sondage suivant
+                voir_rep_op = [vro for vro in opt_comp.fils if vro.is_voir_reponses_option()]
+                if len(voir_rep_op) == 1:
+                    om.taux = OCR(voir_rep_op[0], frame)
+
+                option_deja_vue = sm.ajouter_option(om) # renvoie l'instance de l'option si elle a déjà été vue
                 
-                options = [fils for fils in sg.fils if fils.is_option_reponse()]
-                for option in options:
-                    # Tout pourri quand le texte a 2 lignes, TODO refaire cette fonction
-                    om = option_m()
-                    descr_option = OCR(option, frame)
-                    om.ajouter_description(descr_option)
-                    # Recherche du taux
-                    if option.fils is not None:
-                        voir_rep_op = [vro for vro in option.fils if vro.is_voir_reponses_option()]
-                        if len(voir_rep_op) == 1:
-                            om.taux = OCR(voir_rep_op[0], frame)
-                            print(f"Taux: {om.taux}")
-                    option_deja_vue = sm.ajouter_option(om)
+                if option_deja_vue is not None:
+                    option_pairs.append((opt_comp, option_deja_vue)) # Match du composant à l'option deja vue
+                else:
+                    option_pairs.append((opt_comp, om)) # Pas de match à option deja vue, nouvelle option
+                    print(f"[SONDAGE] Nouvelle option créée: {descr_option}")
 
-                    if not option_deja_vue:
-                        print(f"Nouvelle option de réponse détectée: '{descr_option}'")
-                        last_option_clicked = om 
+            # Fusion avec un sondage précédent si nécessaire
+            sondage_m_prec = None
+            for s_prec in sondages_global[-10:]:
+                if correlation_sondage(s_prec, sm):
+                    sondage_m_prec = s_prec
+                    print("[SONDAGE] Sondage précédent trouvé, mise à jour.")
+                    break
 
-                        if len(voir_rep_op) == 1:
-                            vro_component = voir_rep_op[0]
-                            x, y, w, h = vro_component.position
-                            print(f"Position du bouton 'voir_reponses_option': ({x}, {y}), taille: ({w}, {h})")
-                            print(f"Clic sur 'voir_reponses_option' pour '{descr_option}' à ({x}, {y}).")
-                            simulate_click((x + WINDOW_TOP_LEFT_X)*OFFSET_FACTOR_X, (y + WINDOW_TOP_LEFT_Y)*OFFSET_FACTOR_Y)
-                            
-                            clicked_on_voir_reponses = True
-                            time.sleep(0.5) # Délai pour laisser le temps de charger les options
-                            break
-                        else:
-                            print(f"Pas de bouton 'voir_reponses_option' trouvé pour l'option '{descr_option}'.")
-                    else:
-                        print(f"Option de réponse déjà vue: '{descr_option}'")
+            if sondage_m_prec is not None:
+                for desc in sm.description.get_all_versions():
+                    sondage_m_prec.ajouter_description(desc)
+                # Ajouter/mettre à jour options (ne sert en théorie à rien, TODO virer)
+                for _, om in option_pairs:
+                    sondage_m_prec.ajouter_option(om)
+                sm_courant = sondage_m_prec
+            else:
+                print(f"[SONDAGE] Nouveau sondage: {sm.get_description()} — auteur: {sm.get_auteur()}")
+                sondages_global.append(sm)
+                sm_courant = sm
 
+            # Remap de chaque paire vers l'instance autoritative stockée dans sm_courant
+            option_pairs_mapped = []
+            for opt_comp, om_tmp in option_pairs:
+                om_auth = sm_courant.ajouter_option(om_tmp)
+                option_pairs_mapped.append((opt_comp, om_auth))
+            option_pairs = option_pairs_mapped
 
-                # On vérifie si le sondage existe déjà dans la base de données (on ne vérif que les 10 derniers)
-                sondage_m_prec = None
-                for sondage in sondages_global[-10:]:
-                    if correlation_sondage(sondage, sm):
-                        sondage_m_prec = sondage
-                        print("Sondage precedent trouvé")
-                        break
+            # Lecture de toutes les options avant de scroller
+            for opt_comp, om in option_pairs:
+                print(f"[OPTION] Option {om.get_description()} - nombre de répondants connus: {len(om.respondents)}")
+                if not om.has_been_scanned():
+                    lire_repondants_pour_option(opt_comp, om)
 
-                if sondage_m_prec is not None: # Si on a trouvé un sondage précédent
-                    # On met à jour le sondage existant
-                    print(f"Sondage déjà existant: {sondage_m_prec.id}, mise à jour")
-                    for desc in sm.description.get_all_versions(): # Ajout de la ou les descriptions vues
-                        sondage_m_prec.ajouter_description(desc)
+            # Une fois toutes les options parcourues, on peut scroller
+            scroll_down("small")
+        else:
+            # Aucun mode détecté -> petit scroll pour avancer
+            scroll_down("small")
 
-                    if len(sm.options) > len(sondage_m_prec.options):
-                        for option in sm.options:
-                            sondage_m_prec.ajouter_option(option) # sondage_m gère l'ajout des options et la comparaison avec celles qu'il a deja
-
-                else: # Le sondage n'existe pas, ajout à la liste globale
-                    print(f"Nouveau sondage trouvé: {sm.get_description()}, auteur: {sm.get_auteur()}")
-                    sondages_global.append(sm)
-
-                scroll_down("small")
-
-            else: # Si on n'est ni en mode reponse ni en mode sondage (?)
-                scroll_down("small")
+        exporter_sondages(sondages_global, "debug/sondages.json") # gourmandise
+        PeopleDatabase.get_instance().export_to_json("debug/people_db.json")
 
     # Export
-    sondages_global = nettoyer_sondages(sondages_global)
-    data = {"sondages": [sondage.to_dict_smpl() for sondage in sondages_global]}
-    write_to_json_file(data, "debug/sondages.json")
+    exporter_sondages(sondages_global, "debug/sondages.json")
+    PeopleDatabase.get_instance().export_to_json("debug/people_db.json")
                 
 
 
@@ -728,7 +762,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
 
-    current_verbosity_level = 2
+    current_verbosity_level = 0
 
     screen_width = int(os.getenv("RESOLUTION_WIDTH"))
     screen_height = int(os.getenv("RESOLUTION_HEIGHT"))
@@ -738,7 +772,7 @@ if __name__ == "__main__":
     main_loop(screen_width, screen_height)
 
     print("Finito")
-    
+
 
 
 

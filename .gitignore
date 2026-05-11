@@ -1,5 +1,7 @@
-### VS Code ###
 .vscode/
 .DS_Store
 *.mov
 .venv/
+.env
+training/nano_fine_tuned_220.pt
+yolo11n.pt

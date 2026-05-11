@@ -12,6 +12,7 @@ from Levenshtein import distance as levenshtein_distance
 import time
 import sys
 from data_helper import correlation_txt, write_to_json_file, PeopleDatabase
+from ocr import image_to_string_vlm
 
 
 def verbose(level):
@@ -204,144 +205,34 @@ def detecter_bboxes(frame):
     results = model(frame, verbose=False)
     return results[0].boxes
 
-def OCR(composant_graph, frame, confiance = 10):
-    # On fait de l'OCR sur le composant précisément: selon le type, différentes stratégies
+def OCR(composant_graph, frame):
+    # Extraction géométrique du composant
+    x, y, w, h = composant_graph.position
+    x1, y1 = max(0, int(x - w / 2)), max(0, int(y - h / 2))
+    x2, y2 = min(frame.shape[1], int(x + w / 2)), min(frame.shape[0], int(y + h / 2))
+    
+    cropped_frame = frame[y1:y2, x1:x2]
 
-    c_frame = frame.copy() #évite les embrouilles par la suite
-
-    #Réduction de la zone de la frame au composant
     if composant_graph.is_sondage():
-        # Masquer l'auteur, et tout ce qui est plus bas que l'auteur
-        x, y, w, h = composant_graph.position
-        x1, y1, x2, y2 = int(x - w / 2), int(y - h / 2), int(x + w / 2), int(y + h / 2)
-        
-        auteur = [element for element in composant_graph.fils if element.is_auteur_sondage() == True]
-
-        if auteur:
-            auteur = auteur[0]
-            x_a, y_a, w_a, h_a = auteur.position
-            x1_a, y1_a, x2_a, y2_a = int(x_a - w_a / 2), int(y_a - h_a / 2), int(x_a + w_a / 2)+200, int(y_a + h_a / 2) # TODO: trouver + propre que le +200 pour masquer la date et l'heure
-            c_frame[y1_a:y2_a, x1_a:x2_a] = 0  # Masquer l'auteur
-
-        reponses = [element for element in composant_graph.fils if element.is_option_reponse() == True]
-        for reponse in reponses: # TODO: potentiellement redondant, amélioratioj possible en n'itérant que pour la réponse située le + haut
-            x_r, y_r, w_r, h_r = reponse.position
-            x1_r, y1_r, x2_r, y2_r = int(x_r - w_r / 2), int(y_r - h_r / 2), int(x_r + w_r / 2), int(x_r + h_r / 2)
-            c_frame[y1_r:, :] = 0  # Masquer tout ce qui est à partir du début de la première réponse (et au dessous)
-
-        cropped_frame = c_frame[y1:y2, x1:x2]
-
-        # Quantization + upscaling
-        scale_factor = 2
-        upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-
-        #enregistrer_frame(upscaled_frame, "debug/cropped_sondage.png") 
-
-        data = pytesseract.image_to_data(upscaled_frame, output_type=pytesseract.Output.DICT)
-        text = " ".join(data['text'][i] for i in range(len(data['text'])) if int(data['conf'][i]) > confiance)
-        text = text.replace("\n", " ")
-        return text
+        return image_to_string_vlm(cropped_frame, context_type="poll")
 
     elif composant_graph.is_auteur_sondage():
-        x, y, w, h = composant_graph.position
-        x1, y1, x2, y2 = int(x - w / 2), int(y - h / 2), int(x + w / 2), int(y + h / 2)
-        cropped_frame = frame[y1:y2, x1:x2]
-
-        # Quantization + upscaling
-        scale_factor = 2 
-        upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-
-        enregistrer_frame(upscaled_frame, "debug/cropped_auteur.png")
-
-        text = pytesseract.image_to_string(upscaled_frame)
-        # Lire seulement la première ligne
-        first_line = text.split('\n')[0]
-        return first_line
+        return image_to_string_vlm(cropped_frame, context_type="name")
     
     elif composant_graph.is_option_reponse():
-        x, y, w, h = composant_graph.position
-        x1, y1, x2, y2 = int(x - w / 2), int(y - h / 2), int(x + w / 2), int(y + h / 2)
-        
-        # On vire un peu de bordure en plu pour éviter des problèmes d'OCR
-        x1_crop_margin = int(0.06 * w)
-        # On masque des parties pour éviter d'avoir le % en réponse.
-        cropped_frame_to_process = frame[y1:y2, x1 + x1_crop_margin:x2].copy()
-
-        voir_reponses = [element for element in composant_graph.fils if element.is_voir_reponses_option() == True]
-        if voir_reponses:
-            voir_reponse = voir_reponses[0]
-            x_vr, y_vr, w_vr, h_vr = voir_reponse.position
-        
-            x1_vr_rel = int(x_vr - w_vr / 2) - (x1 + x1_crop_margin)
-            y1_vr_rel = int(y_vr - h_vr / 2) - y1
-            x2_vr_rel = int(x_vr + w_vr / 2) - (x1 + x1_crop_margin)
-            y2_vr_rel = int(y_vr + h_vr / 2) - y1
-
-            x1_vr_rel = max(0, x1_vr_rel)
-            y1_vr_rel = max(0, y1_vr_rel)
-            x2_vr_rel = min(cropped_frame_to_process.shape[1], x2_vr_rel)
-            y2_vr_rel = min(cropped_frame_to_process.shape[0], y2_vr_rel)
-            
-            if x1_vr_rel < x2_vr_rel and y1_vr_rel < y2_vr_rel:
-                cropped_frame_to_process[y1_vr_rel:y2_vr_rel, x1_vr_rel:x2_vr_rel] = 255 # masquage blanc
-
-        scale_factor = 2 
-        upscaled_frame_for_ocr = cv2.resize(cropped_frame_to_process, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-
-        enregistrer_frame(upscaled_frame_for_ocr, "debug/cropped_option.png")
-
-        data = pytesseract.image_to_data(upscaled_frame_for_ocr, output_type=pytesseract.Output.DICT)
-        text = " ".join(data['text'][i] for i in range(len(data['text'])) if int(data['conf'][i]) > confiance)
-
-        text = re.sub(r'^\)\s*', '', text)# enleve les parentheses en début de texte
-        text = re.sub(r'\s*\d+%\s*>?$', '', text)  # enleve les % à la fin ( "xx% >" )
-
-        return text
+        return image_to_string_vlm(cropped_frame, context_type="text")
     
     elif composant_graph.is_voir_reponses_option():
-        x, y, w, h = composant_graph.position
-        padding_x = int(w * 0.5)
-        padding_y = int(h * 0.5) # 50% en + de chaque coté
-
-        x1_padded = max(0, int(x - w / 2) - padding_x)
-        y1_padded = max(0, int(y - h / 2) - padding_y)
-        x2_padded = min(frame.shape[1], int(x + w / 2) + padding_x)
-        y2_padded = min(frame.shape[0], int(y + h / 2) + padding_y)
-        
-        cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
-      
-        scale_factor = 2
-        upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC) 
-
-        enregistrer_frame(upscaled_frame, "debug/taux.png")
-
-        raw_text = pytesseract.image_to_string(upscaled_frame, config='--psm 7')
-        match = re.search(r'(\d{1,2})%', raw_text) # Regex qui matche le taux
-        if match:
-            taux = int(match.group(1))
-            return taux
-        else:
+        res = image_to_string_vlm(cropped_frame, context_type="percentage")
+        try:
+            return int(''.join(filter(str.isdigit, res)))
+        except:
             return None
         
     elif composant_graph.is_personne_sondee():
-        x, y, w, h = composant_graph.position
-        x1, y1, x2, y2 = int(x - w / 2), int(y - h / 2), int(x + w / 2), int(y + h / 2)
+        return image_to_string_vlm(cropped_frame, context_type="name")
 
-        # On mange qqs px sur la gauche pour éviter de capturer l'image de profil
-        x1 +=50 # TODO: paramétrer et mettre dans config
-        
-        cropped_frame = frame[y1:y2, x1:x2]
-
-        # Quantization + upscaling
-        scale_factor = 2 
-        upscaled_frame = cv2.resize(cropped_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-        
-        enregistrer_frame(upscaled_frame, "debug/cropped_personne.png")
-
-        text = pytesseract.image_to_string(upscaled_frame)
-        # Lire seulement la première ligne
-        first_line = text.split('\n')[0]
-        return first_line
+    return image_to_string_vlm(cropped_frame, context_type="text")
     
 
 def correlation_sondage(sondageA, sondageB, seuil = 0.3):

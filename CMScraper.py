@@ -13,6 +13,7 @@ import time
 import sys
 from data_helper import correlation_txt, write_to_json_file, PeopleDatabase
 from ocr import image_to_string_vlm
+from ydotoolMouseControl import YdotoolMouseController
 
 
 def verbose(level):
@@ -601,7 +602,6 @@ if __name__ == "__main__":
 
     dotenv.load_dotenv()
 
-
     # Offsets de debug de la fenetre navigateur capturée
     WINDOW_TOP_LEFT_X = 0 # pos x=0
     WINDOW_TOP_LEFT_Y = 25 # pos y = 0
@@ -642,15 +642,13 @@ if __name__ == "__main__":
             print("Erreur import pyatogui")
             sys.exit(1)
     elif IS_WAYLAND:
-        try:
-            from wayland_automation.mouse_controller import Mouse
-            _wayland_mouse_controller = Mouse()
-        except ImportError:
-            print("Erreur import wayland-automation")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Erreur init wayland-automation : {e}")
-            sys.exit(1)
+        elif IS_WAYLAND:
+            try:
+                # Remplace le module local par ydotool
+                _wayland_mouse_controller = YdotoolMouseController()
+            except Exception as e:
+                print(f"Erreur init ydotool : {e}")
+                sys.exit(1)
 
 
     current_verbosity_level = 0

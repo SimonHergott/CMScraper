@@ -1,0 +1,7 @@
+opencv-python
+numpy
+python-dotenv
+ultralytics
+pytesseract
+Levenshtein
+ollama

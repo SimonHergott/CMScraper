@@ -13,7 +13,8 @@ import time
 import sys
 from data_helper import correlation_txt, write_to_json_file, PeopleDatabase
 from ocr import image_to_string_vlm
-from ydotoolMouseControl import YdotoolMouseController
+import mss
+import pyautogui
 
 
 def verbose(level):
@@ -30,14 +31,15 @@ def verbose(level):
         return wrapper
     return decorator
 
+_sct = None # var globales de persistance de la session mss
+_monitor = None
 
 def read_screen(debug = False, i = -1):
-    # Lit l"écran et renvoie une frame
-    # En débug, on utilise juste une frame qui traine
-    if debug and i ==-1:
+    global _sct, _monitor
+    
+    if debug and i == -1:
         return cv2.imread("test_frame.png")
     elif debug and i >= 0:
-        # Lecture de la frame suivante (frame i) dans la vidéo de test
         video_path = "test_short.mov"
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
@@ -46,17 +48,21 @@ def read_screen(debug = False, i = -1):
         if not ret:
             return None  
         return frame
+    
     else:
-        cap = cv2.VideoCapture(1)
-        if not cap.isOpened():
-            print("Erreur lors de l'ouverture de la caméra")
-            return None
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            print("Erreur lors de la lecture de la frame")
-            return None
-        return frame
+        if _sct is None:
+            os.environ["DISPLAY"] = ":10.0"
+            _sct = mss.MSS()
+            _monitor = _sct.monitors[1]
+
+        try:
+            screen_shot = _sct.grab(_monitor)
+        except mss.exception.ScreenShotError:
+            _monitor = _sct.monitors[1]
+            screen_shot = _sct.grab(_monitor)
+
+        frame = np.array(screen_shot)
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
     
     
 def class_id_to_name(id):
@@ -324,12 +330,7 @@ def scroll_down(scroll_type, goto_x=None, goto_y=None):
                 raise ValueError("Scroll inconnu")
             time.sleep(1.5)
         elif IS_WAYLAND:
-            if scroll_type == "small":
-                _wayland_mouse_controller.scroll(-100) # Valeurs douteuses
-            elif scroll_type == "big":
-                _wayland_mouse_controller.scroll(-300)
-            else:
-                raise ValueError("Scroll inconnu")
+            exit(1)
     except Exception as e:
         print(f"Erreur inattendue lors du scroll: {e}")
 
@@ -339,23 +340,9 @@ def simulate_click(x_screen, y_screen, button='left', clicks=1, interval=0.1):
     Simule un clic de souris à la position donnée.
     """
     print(f"Cliquage à ({x_screen}, {y_screen}) avec le bouton {button}, {clicks} fois.")
-    if IS_MACOS or IS_XORG:
-        pyautogui.click(x=x_screen, y=y_screen, button=button, clicks=clicks, interval=interval)
-        #time.sleep(10) # debug
-    elif IS_WAYLAND:
-        move_mouse_to(x_screen, y_screen)
-        for _ in range(clicks):
-            if button == 'left':
-                _wayland_mouse_controller.click("left")
-            elif button == 'right':
-                _wayland_mouse_controller.click("right")
-            elif button == 'middle':
-                _wayland_mouse_controller.click("middle")
-            else:
-                print(f"Bouton de souris '{button}' inconnu")
-                break
-            if clicks > 1:
-                time.sleep(interval)
+
+    pyautogui.click(x=x_screen, y=y_screen, button=button, clicks=clicks, interval=interval)
+    #time.sleep(10) # debug
 
 def move_mouse_to(x_screen, y_screen, duration=0):
     """
@@ -363,10 +350,7 @@ def move_mouse_to(x_screen, y_screen, duration=0):
     Pas de duration pour wayland
     """
     #print(f"Déplacement de la souris à ({x_screen}, {y_screen})")
-    if IS_MACOS or IS_XORG:
-        pyautogui.moveTo(x_screen, y_screen, duration=duration)
-    elif IS_WAYLAND:
-        _wayland_mouse_controller.move(x_screen, y_screen)
+    pyautogui.moveTo(x_screen, y_screen, duration=duration)
 
 def exporter_sondages(sondages_global, path="debug/sondages.json"):
     # Export des sondages en JSON
@@ -615,14 +599,10 @@ if __name__ == "__main__":
     IS_MACOS = sys.platform == 'darwin'
     IS_LINUX = sys.platform == 'linux'
     IS_XORG = False
-    IS_WAYLAND = False
 
     if IS_LINUX:
         xdg_session_type = os.environ.get('XDG_SESSION_TYPE')
-        if xdg_session_type == 'wayland':
-            IS_WAYLAND = True
-            print("Environnement: Wayland")
-        elif xdg_session_type == 'x11':
+        if xdg_session_type == 'x11':
             IS_XORG = True
             print("Environnement: Xorg")
         else:
@@ -634,21 +614,6 @@ if __name__ == "__main__":
     else:
         print(f"Système inconnu {sys.platform}")
         sys.exit(1)
-
-    if IS_MACOS or IS_XORG:
-        try:
-            import pyautogui
-        except ImportError:
-            print("Erreur import pyatogui")
-            sys.exit(1)
-    elif IS_WAYLAND:
-        elif IS_WAYLAND:
-            try:
-                # Remplace le module local par ydotool
-                _wayland_mouse_controller = YdotoolMouseController()
-            except Exception as e:
-                print(f"Erreur init ydotool : {e}")
-                sys.exit(1)
 
 
     current_verbosity_level = 0

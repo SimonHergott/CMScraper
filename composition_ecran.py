@@ -165,11 +165,12 @@ class composition_ecran:
 class composant:
     """ Classe générique sur la base de laquelle on construira les composants de la composition d'écran."""
 
-    def __init__(self, position):
+    def __init__(self, position, confidence=0.0):
         """ Arguments:
         position: (xcenter, ycenter, width, height) - Component position in the frame."""
         self.id = id_cooker.get_instance().get_new_id()
         self.position = position
+        self.confidence = confidence
         self.fils = []
         self.parent = None
         self.is_init = False # dit si un composant a été initialisé ou non
@@ -275,69 +276,59 @@ class composant:
 
 class bouton_voir_tout(composant):
 
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_bouton_voir_tout(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Pas de fils, et un sondage comme parent
         return (len(self.fils) == 0) and self.parent.is_sondage()
     
 
 class bouton_fermer_reponse(composant):
 
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_bouton_fermer_reponse(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Pas de fils, et un père reponse_dev
         return (len(self.fils) == 0) and self.parent.is_reponse_dev()
 
 
 class option_reponse(composant):
     
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_option_reponse(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Un fils bouton pour voir les réponses, et un parent sondage
         return (len(self.fils) == 1) and self.parent.is_sondage() and self.fils[0].is_is_voir_reponses_option()
         
 class personne_sondee(composant):
     
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_personne_sondee(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Pas de fils, et un parent reponse dev
         return (len(self.fils) == 0) and self.parent.is_reponse_dev()
         
 class reponse_dev(composant):
     
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_reponse_dev(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Au moins un fils (bouton_fermer_reponse), et pas de parent (package différent, voir doc)
         bfr = False
         for fils in self.fils:
             if fils.is_bouton_fermer_reponse():
@@ -346,19 +337,16 @@ class reponse_dev(composant):
         
 class sondage(composant):
     
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_sondage(self):
         return True
     
     def donner_parent(self, composant):
-        # Pas de parent pour un sondage
         AssertionError("Un sondage ne peut contenir de parent.")
 
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Au moins un auteur et une option en tant que fils, mais pas de parent
         auteur = False
         option = False
         for fils in self.fils:
@@ -366,35 +354,30 @@ class sondage(composant):
                 auteur = True
             if fils.is_option_reponse():
                 option = True
-        
         return (len(self.fils) >= 2) and auteur and option
         
         
 class voir_reponses_option(composant):
         
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
     
     def is_voir_reponses_option(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Un parent option_reponse et pas de fils (voir doc, reponse_dev dans un autre package)
         return (len(self.fils) == 0) and self.parent.is_option_reponse()
     
 
 class auteur_sondage(composant):
     
-    def __init__(self, position):
-        super().__init__(position)
+    def __init__(self, position, confidence=0.0):
+        super().__init__(position, confidence)
 
     def is_auteur_sondage(self):
         return True
     
     def verifier_integrite(self):
-        # Vérifie si le composant est intègre et a bien été initialisé
-        # Pas de fils, et un parent sondage
         return (len(self.fils) == 0) and self.parent.is_sondage()
             
 

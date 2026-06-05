@@ -5,3 +5,6 @@
 .env
 training/nano_fine_tuned_220.pt
 yolo11n.pt
+*.pyc
+
+debug/

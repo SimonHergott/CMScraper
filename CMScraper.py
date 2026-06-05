@@ -4,7 +4,6 @@ import dotenv
 from composition_ecran import composition_ecran, composant, auteur_sondage, bouton_fermer_reponse, bouton_voir_tout, option_reponse, personne_sondee, reponse_dev, sondage, voir_reponses_option
 from ultralytics import YOLO
 import os
-import pytesseract
 from sondage import sondage_m, option_m
 import json
 import re
@@ -62,7 +61,10 @@ def read_screen(debug = False, i = -1):
             screen_shot = _sct.grab(_monitor)
 
         frame = np.array(screen_shot)
-        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        mid = frame.shape[1] // 2
+        frame[:, mid:, :] = 0
+        return frame
     
     
 def class_id_to_name(id):
@@ -91,19 +93,24 @@ def analyse_frames(frame):
     cls = bboxes.cls
     xywh = bboxes.xywh
 
-    # Indices de confiance
-    indice_conf_general = float(os.getenv("INDICE_CONF"))
-    indice_conf_auteur = float(os.getenv("INDICE_CONF_AUTEUR")) # Séparé car le modèle est nul sur les auteurs
+    # Indices de confiance par classe
+    conf_thresholds = {
+        0: float(os.getenv("CONF_AUTEUR_SONDAGE", os.getenv("INDICE_CONF_AUTEUR", "0.5"))),
+        1: float(os.getenv("CONF_BOUTON_FERMER_REPONSE", os.getenv("INDICE_CONF", "0.7"))),
+        2: float(os.getenv("CONF_BOUTON_VOIR_TOUT", os.getenv("INDICE_CONF", "0.7"))),
+        3: float(os.getenv("CONF_OPTION_REPONSE", os.getenv("INDICE_CONF", "0.7"))),
+        4: float(os.getenv("CONF_PERSONNE_SONDEE", os.getenv("INDICE_CONF", "0.7"))),
+        5: float(os.getenv("CONF_REPONSE_DEV", os.getenv("INDICE_CONF", "0.7"))),
+        6: float(os.getenv("CONF_SONDAGE", os.getenv("INDICE_CONF", "0.7"))),
+        7: float(os.getenv("CONF_VOIR_REPONSES_OPTION", os.getenv("INDICE_CONF", "0.7"))),
+    }
 
     # Filtrage par confiance
     high_conf_indices = []
     for i, class_id in enumerate(cls):
-        if class_id == 0:  # auteur_sondage
-            if conf[i] > indice_conf_auteur:
-                high_conf_indices.append(i)
-        else:
-            if conf[i] > indice_conf_general:
-                high_conf_indices.append(i)
+        seuil = conf_thresholds.get(int(class_id), float(os.getenv("INDICE_CONF", "0.7")))
+        if conf[i] > seuil:
+            high_conf_indices.append(i)
 
     filtered_boxes = xywh[high_conf_indices]
     filtered_conf = conf[high_conf_indices]
@@ -124,15 +131,14 @@ def debug_exporter_composition_as_frame(composition, taillex, tailley):
     for composant in composition.get_all_composants():
         x, y, w, h = composant.position
         x1, y1, w1, h1 = int(x-w/2), int(y-h/2), int(x+w/2), int(y+h/2)
-        cv2.rectangle(frame, (x1, y1), (w1, h1), (255, 255, 255), 2)
-        text_size = cv2.getTextSize(composant.__class__.__name__, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
-        text_x = x1 + 5
-        text_y = y1 + text_size[1] + 5
-        cv2.putText(frame, f"{composant.__class__.__name__}, id: {composant.id}, x:{x}, y:{y}", (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.rectangle(frame, (x1, y1), (w1, h1), (255, 255, 255), 1)
+        cv2.circle(frame, (int(x), int(y)), 3, (0, 0, 255), -1)
+        text = f"{composant.__class__.__name__} id:{composant.id} c:({int(x)},{int(y)}) conf:{composant.confidence:.2f}"
+        cv2.putText(frame, text, (x1 + 3, y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
     return frame
 
 def debug_overlay_frame_composition(composition, frame, taillex, tailley, alpha_dim=0.4, alpha_overlay=1.0):
-    output_frame = frame.copy() 
+    output_frame = frame.copy()
     output_frame = cv2.convertScaleAbs(output_frame, alpha=alpha_dim)
     overlay_annotations = np.zeros_like(output_frame, dtype=np.uint8)
 
@@ -142,14 +148,15 @@ def debug_overlay_frame_composition(composition, frame, taillex, tailley, alpha_
         y1 = int(y - h / 2)
         x2 = int(x + w / 2)
         y2 = int(y + h / 2)
-        cv2.rectangle(overlay_annotations, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        text = f"{composant.__class__.__name__}, id: {composant.id}, x:{x}, y:{y}"
-        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-        text_x = x1 + 5
-        text_y = y1 - 10 if y1 - 10 > text_size[1] + 5 else y1 + text_size[1] + 5
+        cv2.rectangle(overlay_annotations, (x1, y1), (x2, y2), (0, 255, 0), 1)
+        cv2.circle(overlay_annotations, (int(x), int(y)), 3, (0, 0, 255), -1)
+        text = f"{composant.__class__.__name__} id:{composant.id} c:({int(x)},{int(y)}) conf:{composant.confidence:.2f}"
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+        text_x = x1 + 3
+        text_y = y1 - 5 if y1 - 5 > text_size[1] + 3 else y1 + text_size[1] + 3
         if text_y < text_size[1]:
-            text_y = y2 + text_size[1] + 5
-        cv2.putText(overlay_annotations, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+            text_y = y2 + text_size[1] + 3
+        cv2.putText(overlay_annotations, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
     final_frame = cv2.addWeighted(output_frame, 1.0, overlay_annotations, alpha_overlay, 0)
     if final_frame.shape[1] != taillex or final_frame.shape[0] != tailley:
         final_frame = cv2.resize(final_frame, (taillex, tailley))
@@ -162,7 +169,6 @@ def afficher_frame(frame):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-@verbose(level=2)
 def enregistrer_frame(frame, path):
     # Enregistre la frame
     cv2.imwrite(path, frame)
@@ -188,21 +194,21 @@ def make_component(box_detail):
     classe = int(box_detail[2])
 
     if classe == 0: # auteur_sondage
-        component = auteur_sondage(box)
+        component = auteur_sondage(box, confidence)
     elif classe == 1: # bouton_fermer_reponse
-        component = bouton_fermer_reponse(box)
+        component = bouton_fermer_reponse(box, confidence)
     elif classe == 2: # bouton_voir_tout
-        component = bouton_voir_tout(box)
+        component = bouton_voir_tout(box, confidence)
     elif classe == 3: # option_reponse
-        component = option_reponse(box)
+        component = option_reponse(box, confidence)
     elif classe == 4: # personne_sondee
-        component = personne_sondee(box)
+        component = personne_sondee(box, confidence)
     elif classe == 5: # reponse_dev
-        component = reponse_dev(box)
+        component = reponse_dev(box, confidence)
     elif classe == 6: # sondage
-        component = sondage(box)
+        component = sondage(box, confidence)
     elif classe == 7: # voir_reponses_option
-        component = voir_reponses_option(box)
+        component = voir_reponses_option(box, confidence)
 
     return component
 
@@ -320,12 +326,12 @@ def scroll_down(scroll_type, goto_x=None, goto_y=None):
         if IS_MACOS or IS_XORG:
             if scroll_type == "small":
                 #print("Small scroll")
-                pyautogui.scroll(3)
+                pyautogui.scroll(-1)
             elif scroll_type == "big":
                 #print("Big scroll")
-                pyautogui.scroll(3)
-                pyautogui.scroll(3)
-                pyautogui.scroll(3)
+                pyautogui.scroll(-1)
+                pyautogui.scroll(-1)
+                pyautogui.scroll(-1)
             else:
                 raise ValueError("Scroll inconnu")
             time.sleep(1.5)
@@ -444,7 +450,7 @@ def lire_repondants_pour_option(option_component, option_model):
 
 
 
-def main_loop(screen_width, screen_height):
+def main_loop(debug_mode=False, debug_folder="debug"):
     frame_index = 0
     sondages_global = []  # Ensemble des sondages qui ont été vus
 
@@ -453,18 +459,19 @@ def main_loop(screen_width, screen_height):
         frame_index += 1
         if frame is None:
             break
+        h, w = frame.shape[:2]
         composition = analyse_frames(frame)
 
         print(f"\nPasse {frame_index} -- Frame lue, analyse en cours...\n")
 
-        # DEBUG
-        if not os.path.exists("debug/analyses"):
-            os.makedirs("debug/analyses")
-        if not os.path.exists("debug/raw"):
-            os.makedirs("debug/raw")
-        enregistrer_frame(debug_exporter_composition_as_frame(composition, screen_width, screen_height), f"debug/analyses/compo{frame_index}.png")
-        enregistrer_frame(debug_overlay_frame_composition(composition, frame, screen_width, screen_height), f"debug/analyses/overlay{frame_index}.png")
-        enregistrer_frame(frame, f"debug/raw/frame{frame_index}.png")
+        if debug_mode:
+            if not os.path.exists(f"{debug_folder}/analyses"):
+                os.makedirs(f"{debug_folder}/analyses")
+            if not os.path.exists(f"{debug_folder}/raw"):
+                os.makedirs(f"{debug_folder}/raw")
+            enregistrer_frame(debug_exporter_composition_as_frame(composition, w, h), f"{debug_folder}/analyses/compo{frame_index}.png")
+            enregistrer_frame(debug_overlay_frame_composition(composition, frame, w, h), f"{debug_folder}/analyses/overlay{frame_index}.png")
+            enregistrer_frame(frame, f"{debug_folder}/raw/frame{frame_index}.png")
 
         # Si on se retrouve en mode reponse_dev hors séquence, on ferme proprement et on continue
         if composition.reponse_dev_mode():
@@ -480,7 +487,7 @@ def main_loop(screen_width, screen_height):
             sg_complet = None
             for sg in sondages_graph:
                 # Affichage complet
-                bouton_voir_tout = [c for c in sg.get_all_composants() if c.is_bouton_voir_tout()]
+                bouton_voir_tout = [c for c in sg.fils if c.is_bouton_voir_tout()]
                 if bouton_voir_tout:
                     bx, by, bw, bh = bouton_voir_tout[0].position
                     simulate_click((bx + WINDOW_TOP_LEFT_X) * OFFSET_FACTOR_X, (by + WINDOW_TOP_LEFT_Y) * OFFSET_FACTOR_Y)
@@ -588,7 +595,7 @@ if __name__ == "__main__":
 
     # Offsets de debug de la fenetre navigateur capturée
     WINDOW_TOP_LEFT_X = 0 # pos x=0
-    WINDOW_TOP_LEFT_Y = 25 # pos y = 0
+    WINDOW_TOP_LEFT_Y = 0 # pos y = 0
 
     # Correction à la main TODO: capter d'ou ca vient
     OFFSET_DEBUG_Y = 0 # -100 
@@ -616,14 +623,11 @@ if __name__ == "__main__":
         sys.exit(1)
 
 
-    current_verbosity_level = 0
+    current_verbosity_level = int(os.getenv("VERBOSE", "0"))
+    debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+    debug_folder = os.getenv("DEBUG_FOLDER", "debug")
 
-    screen_width = int(os.getenv("RESOLUTION_WIDTH"))
-    screen_height = int(os.getenv("RESOLUTION_HEIGHT"))
-
-    print(f"Résolution de l'écran: {screen_width}x{screen_height}")
-
-    main_loop(screen_width, screen_height)
+    main_loop(debug_mode=debug_mode, debug_folder=debug_folder)
 
     print("Finito")
 

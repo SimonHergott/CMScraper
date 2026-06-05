@@ -20,8 +20,7 @@ class VisionOCR:
 
     def process_ocr(self, frame, prompt="Extract the text visible in this image accurately."):
         """
-        Remplace pytesseract.image_to_string.
-        Prend une frame, renvoie la string prédite via Ollama API.
+        Prend une frame, renvoie la string prédite via Ollama API / VLM.
         """
         if frame is None or frame.size == 0:
             return ""

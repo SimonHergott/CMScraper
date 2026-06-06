@@ -1,11 +1,11 @@
 from ultralytics import YOLO
 
 DATA_YAML = "CMScraper/training/merged_dataset/data.yaml"
-MODEL = "yolo11n.pt"
+MODEL = "yolo11s.pt"
 EPOCHS = 100
-IMGSZ = 640
+IMGSZ = 1280
 BATCH = 16
-DEVICE = "cpu"
+DEVICE = "cuda"
 PROJECT = "CMScraper/runs"
 NAME = "cms_detector"
 

@@ -1,12 +1,12 @@
 from ultralytics import YOLO
 
-DATA_YAML = "CMScraper/training/merged_dataset/data.yaml"
-MODEL = "yolo11s.pt"
+DATA_YAML = "/home/simon/CMScraper/training/merged_dataset/data.yaml"
+MODEL = "yolo11n.pt"
 EPOCHS = 100
 IMGSZ = 1280
-BATCH = 16
+BATCH = 2
 DEVICE = "cuda"
-PROJECT = "CMScraper/runs"
+PROJECT = "/home/simon/CMScraper/runs"
 NAME = "cms_detector"
 
 model = YOLO(MODEL)

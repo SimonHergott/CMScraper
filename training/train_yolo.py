@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 DATA_YAML = "CMScraper/training/merged_dataset/data.yaml"
-MODEL = "yolo11s.pt"
+MODEL = "yolo11l.pt"
 EPOCHS = 100
 IMGSZ = 1280
 BATCH = 16

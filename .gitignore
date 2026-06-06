@@ -8,3 +8,10 @@ yolo11n.pt
 *.pyc
 
 debug/
+
+training/CMS25img
+training/CMS232img
+training/images
+training/merged_dataset/
+training/newlabels
+training/out_json
